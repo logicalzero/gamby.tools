@@ -1,44 +1,0 @@
-8
-
-dir
-41
-http://svn.logicalzero.com/miscellaneous/Processing/CharEdit
-http://svn.logicalzero.com/miscellaneous
-
-
-
-2009-05-13T22:25:36.826639Z
-41
-stokes
-
-
-svn:special svn:externals svn:needs-lock
-
-characters.dat
-file
-48
-
-
-
-2009-08-10T01:01:20.000000Z
-f5934b7b5bf88e9c6fdb628392502ff2
-2009-08-10T03:29:24.092254Z
-48
-stokes
-has-props
-
-data
-dir
-
-CharEdit.pde
-file
-51
-
-
-
-2009-08-18T02:04:49.000000Z
-06eb1e25ba4c64b9fac5f826f142ca0e
-2009-08-21T23:45:02.337066Z
-51
-stokes
-
