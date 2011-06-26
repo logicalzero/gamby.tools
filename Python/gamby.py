@@ -1,0 +1,422 @@
+#!/usr/bin/python
+
+try:
+   import os, sys
+   import Image, ImageSequence
+except ImportError, e:
+   if __name__ == "__main__":
+      print "The Python Imaging Library (PIL) is required for this tool to work."
+      exit(0)
+   raise e
+
+# TODO: Remove comments before converting code back to images.
+
+# Some 'constants' for providing warnings when too much memory
+# is being used.
+# TODO: Subtract worst-case bootloader (and GAMBY library) sizes from max
+_SIZE_LIMITS = [
+   (32 * 1024, "ATMega328 available flash"),
+   (16 * 1024, "ATMega168 available flash"),
+   (12 * 1024, "a reasonable size"),
+   ]
+
+def fixName(name):
+   """ Create a reasonable variable name from a filename.
+   """
+   name = os.path.splitext(os.path.split(name)[-1])[0]
+   if len(name) == 0:
+      return "no_name"
+   newname = ""
+   for c in name:
+      o = ord(c)
+      if (o > 48 and o < 91) or (o > 96 and o < 123):
+         newname += c
+      else:
+         newname += '_'
+   newname = newname.replace('__','_')
+   if newname[0].isdigit():
+      newname = '_' + newname
+   return newname.rstrip('_')
+
+class sprites:
+   """
+   A class representing the namespace for all GAMBY sprite conversion code.
+   Do not instantiate; just call the class' methods directly.
+   """
+
+   _useMask = True
+   _dataType = 'prog_uchar'
+   _unitSize = 8
+   
+   @classmethod
+   def numFrames(self, img):
+      """ Return the number of frames in an animated GIF.
+      """
+      i = 1
+      img.seek(0)
+      try:
+         while True:
+            img.seek(img.tell() + 1)
+            i += 1
+      except EOFError:
+         pass
+      img.seek(0)
+      return i
+
+
+   @classmethod
+   def createData(self, img, ignoreSolid=True):
+      """ Turn an image into an array of bits, stored as a series of bytes.
+          The first two items are the image dimensions.
+
+          @param img: The image from which to generate the data
+          @type img: `Image.Image`
+          @param ignoreSolid: If `True`, bitmaps that are all black or
+              all white are ignored; `None` is returned.
+          @param unitSize: The size (in bits) of the units used to store the
+              image data; presumably 8, 16 or 32.
+      """
+      if img == None:
+         return None
+      if img.mode == '1':
+         data = img.getdata()
+      else:
+         data = img.convert('1').getdata()
+      if ignoreSolid:
+         s = sum(data)
+         if s == 0:
+            # Totally black, ignore
+            return None
+         if s == img.size[0] * img.size[1] * 255:
+            # Totally white, ignore
+            return None
+
+      # Make the data list. The first two elements are the dimension
+      result = list(img.size)
+
+      i = 0
+      b = 0
+      for p in data:
+         # bitmaps on LCD are 'inversed': 1 is black, 0 is not
+         p = 0 if p else 1
+         b = (b << 1) + p
+         # print p,i,b
+         i += 1
+         if i == self._unitSize:
+            result.append(b)
+            i = 0
+            b = 0
+      return result
+
+
+   @classmethod
+   def undo(self, d, imgSize=None):
+      """ Convert an array of bitmap data into an image.
+      """
+      if imgSize == None:
+         imgSize = d[0:2]
+         d = d[2:]
+      img = Image.new('1',imgSize,255)
+      ar = []
+      for b in d:
+         for c in bin(b)[2:].rjust(self._unitSize,'0'):
+            if c == '0':
+               ar.append(255)
+            else:
+               ar.append(0)
+      img.putdata(ar)
+      return img.rotate(90)
+
+
+   @classmethod
+   def writeCode(self, name, data, digits=2, sizes=True):
+      """ Generate Arduino code from a single list of bitmap data.
+      """
+      if data == None:
+         return ''
+      result = []
+      if sizes:
+         result.append("    %s, %s" % (data[0], data[1]))
+         
+      line = []
+      i = 0
+      for b in data[2:]:
+         line.append( "0x%s" % hex(b)[2:].rjust(digits,'0'))
+         i += 1
+         if i == 12:
+            result.append("    %s" % ', '.join(line))
+            line = []
+            i = 0
+      return "prog_uchar %s[] PROGMEM = {\n%s\n}\n" % (name, ',\n'.join(result))
+
+
+   @classmethod
+   def convert(self, f, mask=None, size=[0,0]):
+      """ Turn an image into Arduino code for GAMBY. Any transparency
+          or alpha channel is turned into its own sprite.
+
+          @param f: The image file or filename to convert
+          @param mask: If `True` (default), additional sprites are created
+              from the image's transparency information.
+          @param size: A two element list containing the total number of
+              converted images and the total number of bytes they consume.
+              This is modified 'in place'.
+          @param out: A stream to which to write the results.
+      """
+      if mask == None:
+         mask = self._useMask
+      if isinstance(f, basestring):
+         filename = f
+         img =  Image.open(f)
+      elif isinstance(f, Image.Image):
+         filename = f.filename
+         img = f
+      else:
+         # Problem.
+         raise ValueError, "Can't convert %s" % f
+
+      totalSize = 0
+      bits = []
+      for frame in ImageSequence.Iterator(img):
+         # image rotated 90 degrees clockwise so bits in best order for LCD
+         # (doesn't matter in graphics mode, but in text/block mode it helps)
+         img = img.rotate(-90)
+         alpha = None
+         if mask:
+            # Get alpha for mask, using img converted to RGBA
+            alpha = Image.new('L', img.size)
+            alpha.putdata([x[-1] for x in img.convert("RGBA").getdata()])
+         converted = (sprites.createData(img), sprites.createData(alpha))
+         if converted[0]:
+            totalSize += len(converted[0])
+         bits.append(converted)
+
+      name = fixName(filename)
+      result = []
+
+      if not bits:
+         # Nothing returned (empty list or possibly None)
+         raise Exception, "Could not convert %s" % filename
+
+      if len(bits) == 1:
+         result = [sprites.writeCode(name, bits[0][0]),
+                   sprites.writeCode(name+"_mask", bits[0][1])]
+      else:
+         for i in range(len(bits)):
+            result.append(sprites.writeCode("%s_%s" % (name, i), bits[i][0]))
+            result.append(sprites.writeCode("%s_%s_mask" % (name, i), bits[i][1]))
+
+      if size:
+         # Image count and total size (in bytes), modified 'in place'
+         size[0] += len(bits)
+         size[1] += totalSize
+
+      return '\n'.join(result)
+
+
+   @classmethod
+   def convertFiles(self, filenames, size=None, mask=None, out=sys.stdout):
+      """
+      """
+      if isinstance(out, basestring):
+         out = file(out, 'w')
+      for filename in filenames:
+         out.write(self.convert(filename, mask=mask, size=size))
+         out.write('\n')
+      if out != sys.stdout:
+         out.close()
+         
+
+   @classmethod
+   def unconvert(self, data, size=None, out=None):
+      """ Convert Arduino code back into images.
+      """
+      # TODO: Put alpha back into GIF?
+      # TODO: Remove comments?
+      result = []
+      start, end = (data.find('prog_uchar'), data.find('}'))
+      while start > -1 and start > -1:
+         # print data[start:end]
+         name = data[start + 10:data.find('[]', start)].strip()
+         bytes = [b.strip(',') for b in data[data.find('{', start)+1:end].split()]
+         bits = [int(bytes[0]), int(bytes[1])]
+         for b in bytes[2:]:
+            bits.append(int(b,16))
+         result.append((name, sprites.undo(bits)))
+         end += 1
+         start, end = (data.find('prog_uchar', end), data.find('}', end))
+
+      return result
+
+
+   @classmethod
+   def unconvertFiles(self, filenames, size=None, out=''):
+      """
+      """
+      images = []
+      for filename in filenames:
+         f = file(filename, 'r')
+         images.append(self.unconvert(f.read()))
+         f.close()
+      # do the write here.
+      # XXX: Write this!
+
+
+
+class tilesets(sprites):
+   """
+   Methods for generating Gamby tilesets from image data. Tiles are 16-bit
+   integers representing a 4x4 pixel square; a tileset consists of 16 tiles.
+   The source file is expected to be a 16x16 image containing a 4x4 grid of
+   tiles.
+   """
+
+   _useMask = False
+   _dataType = "prog_uint16_t"
+   _unitSize = 16
+
+   @classmethod
+   def convert(self, f, size=None):
+      if isinstance(f, basestring):
+         filename = f
+         img =  Image.open(f)
+      elif isinstance(f, Image.Image):
+         filename = f.filename
+         img = f
+      else:
+         # Problem.
+         raise ValueError, "Can't convert %s" % f
+
+      # image rotated 90 degrees clockwise so bits in best order for LCD
+      # (doesn't matter in graphics mode, but in text/block mode it helps)
+      img = img.rotate(-90)
+      img = img.convert('1')
+      
+      totalSize = 0
+      bits = []
+      for c in range(12, -1, -4):
+         for r in range(0,16,4):
+            tile = img.crop((r,c,r+4,c+4))
+            data = self.createData(tile)
+            bits.append(data)
+            
+      name = fixName(filename)
+
+      if not bits:
+         # Nothing returned (empty list or possibly None)
+         raise Exception, "Could not convert %s" % filename
+
+      if size:
+         # Image count and total size (in bytes), modified 'in place'
+         size[0] += 1
+         size[1] += len(bits) * 2
+         
+      return self.writeCode(name, bits, digits=self._unitSize, sizes=False)
+      
+
+   def unconvert(*args, **kwargs):
+      raise NotImplementedError, "unconvert for tilesets not yet implemented."
+
+
+if __name__ == '__main__':
+   argv = sys.argv
+   out = sys.stdout
+   err = sys.stderr
+   scriptName = argv.pop(0)
+   
+   if argv[0].lower() in ('help','-h','--help','?'):
+      print """GAMBY Graphics Tool\n
+Usage:
+gamby.py <sprite|tileset> [-u|--undo] [-o|--output filename] [sourcefiles]
+
+  sprite: Generates PROGMEM code from an image file. Each frame of an animated
+    GIF is converted to its own sprite. Mask sprites are generated from GIF
+    transparency.
+  tileset: Generates PROGMEM code for a tile-mode tileset from a 4x4 grid of
+    4x4 pixel tiles. 
+
+Options:
+  sourcefiles: One or more source files to convert. Defaults to stdin.
+  --output | -o <filename>: Specifies a file to which the output is to be
+    written. Defaults to stdout (for redirecting, etc.).
+  --undo | -u: Converts Arduino PROGMEM code back to an image (if possible).
+"""
+      exit(0)
+
+   params = {}
+   
+   # Parse out command-line parameters
+   # options list: name long form, short form, number of arguments
+   options = [
+      ('--output','-o', 1),
+      ('--undo', '-u', 0)
+      ]
+   for longName, shortName, numArgs in options:
+      i = -1
+      if longName in argv:
+         i = argv.index(longName)
+         argv[argv.index(longName)] = shortName
+      elif shortName in argv:
+         i = argv.index(shortName)
+      if i >= 0:
+         argv.pop(i)
+         params[shortName] = [argv.pop(i) for p in range(numArgs)]
+
+   # Process univerally-applicable parameters
+   out = params['-o'][0] if '-o' in params else out
+   direction = 1 if '-u' in params else 0
+   
+#   if '-o' in params:
+#      out = params['-o'][0]
+
+   # With parameters and script name removed, are there enough arguments?
+   if len(argv) == 0:
+      err.write('%s: Too few arguments\n' % scriptName)
+      if out != sys.stdout:
+         out.close()
+      if err != sys.stderr:
+         err.close()
+      exit()
+      
+   mode = argv.pop(0).lower()
+
+   # List of modes.
+   # { <mode name>: (<converter method>, <unconverter method>), ... }
+   # <converter> and <unconverter> are functions/methods for generating data from
+   # from images and regenerating images from data, respectively. If one is None,
+   # the process is one-way. 
+   modes = {
+      'sprite': (sprites.convertFiles, sprites.unconvertFiles),
+      'tileset': (tilesets.convertFiles, None),
+      }
+
+   if mode not in modes:
+      err.write("%s: unknown command '%s'\n" % (scriptName, mode))
+      exit()
+
+   if modes[mode][direction] == None:
+      if direction == 0:
+         err.write("%s: cannot convert to '%s'\n" % (scriptName, mode))
+      else:
+         err.write("%s: cannot undo conversion '%s'\n" % (scriptName, mode))
+      exit()
+
+   # List to keep track of number of converted items and total size in bytes
+   # This gets passed to conversion methods and is changed 'in place'.
+   size = [0,0]
+
+   # Do the conversion!
+   modes[mode][direction](argv, size=size, out=out)
+
+   # Give warning if too much data generated.
+   for memory, name in _SIZE_LIMITS:
+      if size[1] > memory:
+         err.write("Warning: Generated data is %s bytes; %s is %s bytes\n" %\
+                   (size[1], name, memory))
+         break
+
+   # shut things down.
+   if out != sys.stdout:
+      out.close()
+   if err != sys.stderr:
+      err.close()
