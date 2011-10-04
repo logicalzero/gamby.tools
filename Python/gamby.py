@@ -1,24 +1,56 @@
 #!/usr/bin/python
 
+"""
+GAMBY Graphics Tool
+
+This package contains methods for converting GIF images into code for use
+with the GAMBY LCD/Game shield. This script also functions as a stand-alone
+utility which can be run from the command line.
+
+@todo: Remove comments before converting code back to images.
+
+@var _SIZE_LIMITS: An set of 'constants' for providing warnings when too much
+    memory is being used.
+@type _SIZE_LIMITS: A list of tuples containing a size (in bytes) and a
+    corresponding warning message.
+    
+"""
+
+import os
+import sys
+
+# Ensure a compatible verison of Python is being used
+# (the ternary operator was added in 2.5)
+
+if sys.version[:3] < '2.5':
+   if __name__ == "__main__":
+      print "This script requires Python version 2.5 or greater."
+      exit(0)
+   raise RuntimeError("Python version 2.5 or greater required")
+
+
+# Ensure PIL (or Pillow, etc.) is installed
+
 try:
-   import os, sys
    import Image, ImageSequence
 except ImportError, e:
    if __name__ == "__main__":
-      print "The Python Imaging Library (PIL) is required for this tool to work."
+      print "The Python Imaging Library (PIL) or its equivalent is required " \
+          "for this tool to work."
       exit(0)
    raise e
 
-# TODO: Remove comments before converting code back to images.
 
-# Some 'constants' for providing warnings when too much memory
-# is being used.
+##############################################################################
+
 # TODO: Subtract worst-case bootloader (and GAMBY library) sizes from max
 _SIZE_LIMITS = [
    (32 * 1024, "ATMega328 available flash"),
    (16 * 1024, "ATMega168 available flash"),
    (12 * 1024, "a reasonable size"),
    ]
+
+##############################################################################
 
 def fixName(name):
    """ Create a reasonable variable name from a filename.
@@ -38,6 +70,8 @@ def fixName(name):
       newname = '_' + newname
    return newname.rstrip('_')
 
+##############################################################################
+   
 class sprites:
    """
    A class representing the namespace for all GAMBY sprite conversion code.
@@ -51,6 +85,10 @@ class sprites:
    @classmethod
    def numFrames(self, img):
       """ Return the number of frames in an animated GIF.
+
+          @param img: The image to count
+          @type img: `Image.Image`
+          @return: The frame count
       """
       i = 1
       img.seek(0)
@@ -129,25 +167,24 @@ class sprites:
 
 
    @classmethod
-   def writeCode(self, name, data, digits=2, sizes=True):
+   def writeCode(self, name, data, digits=2, sizes=True, tab="    "):
       """ Generate Arduino code from a single list of bitmap data.
       """
       if data == None:
          return ''
       result = []
       if sizes:
-         result.append("    %s, %s" % (data[0], data[1]))
+         result.append("%s%s, %s," % (tab, data[0], data[1]))
          
       line = []
       i = 0
       for b in data[2:]:
-         line.append( "0x%s" % hex(b)[2:].rjust(digits,'0'))
+         if i % 12 == 0:
+            line.append("\n%s" % tab)
+         line.append( "0x%s, " % hex(b)[2:].rjust(digits,'0'))
          i += 1
-         if i == 12:
-            result.append("    %s" % ', '.join(line))
-            line = []
-            i = 0
-      return "prog_uchar %s[] PROGMEM = {\n%s\n}\n" % (name, ',\n'.join(result))
+      result.append(''.join(line).rstrip(' \n,'))
+      return "prog_uchar %s[] PROGMEM = {\n%s\n}\n" % (name, '\n'.join(result))
 
 
    @classmethod
@@ -262,6 +299,7 @@ class sprites:
       # XXX: Write this!
 
 
+##############################################################################
 
 class tilesets(sprites):
    """
@@ -317,6 +355,8 @@ class tilesets(sprites):
    def unconvert(*args, **kwargs):
       raise NotImplementedError, "unconvert for tilesets not yet implemented."
 
+
+##############################################################################
 
 if __name__ == '__main__':
    argv = sys.argv
