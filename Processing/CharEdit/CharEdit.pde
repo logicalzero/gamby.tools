@@ -447,9 +447,9 @@ void exportCharSet (boolean arduinoStyle, boolean asBytes) {
     println("// Each character is 32 bits:\n//  bits 0-24: the character bitmap (by row)\n//  bits 25-27: character vertical offset\n//  bits 28-31: character width\n{");
     
   if (asBytes)
-    println ("const byte font[] PROGMEM = {");
+    println ("PROGMEM prog_uchar font[] = {");
   else
-    println ("const long font[] PROGMEM = {");
+    println ("PROGMEM prog_uint32_t font[] = {");
     
   for (int i = 0; i < CHAR_COUNT; i++) {
     int charIdx = i * CHAR_SIZE;
