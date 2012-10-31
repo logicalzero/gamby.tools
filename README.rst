@@ -2,13 +2,13 @@ gamby.tools README
 ==================
 
 This repository contains software tools for the creation of content
-for the GAMBY LCD/Game shield. 
+for the `GAMBY LCD/Game shield <http://logicalzero.com/gamby/>`_. 
 
 
 Processing/CharEdit/
 ====================
 
-This is a [http://processing.org/ Processing] sketch for the GAMBY font
+This is a `Processing <http://processing.org/>`_ sketch for the GAMBY font
 editing tool. It contains its own usage documentation.
 
 Each character image in the GAMBY font is 32 bits. Bits 0-24 form a 5x5 pixel 
