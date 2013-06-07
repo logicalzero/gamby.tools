@@ -8,6 +8,9 @@ for the `GAMBY LCD/Game shield <http://logicalzero.com/gamby/>`_.
 Processing/CharEdit/
 ====================
 
+***Warning:** This sketch is incompatible with recent versions of Processing.
+It needs refactoring.*
+
 This is a `Processing <http://processing.org/>`_ sketch for the GAMBY font
 editing tool. It contains its own usage documentation.
 
