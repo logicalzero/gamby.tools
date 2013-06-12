@@ -12,16 +12,16 @@ utility which can be run from the command line.
 
 @todo: Further code cleaning. Too many hacks; full refactoring may be needed.
     Data type in generated code may not be consistent.
-@todo: Create multi-frame sprites
 @todo: Add 'icons' (8px high bitmaps; same as sprites without height)
-@todo: Add 'splash pages' (multi-line icons)
-@todo: Remove comments before converting code back to images.
+@todo: Add 'splash pages' (multi-line icons, each 8px line a 'frame')
+@todo: Use regex to parse code when converting back to GIF. This should make it
+    easy to do things like remove comments, parse out names, etc.
 @todo: Use getopt or argparse instead of 'manually' parsing arguments; there
     are now too many options to continue as is.
 
-@var _SIZE_LIMITS: An set of 'constants' for providing warnings when too much
+@var SIZE_LIMITS: An set of 'constants' for providing warnings when too much
     memory is being used.
-@type _SIZE_LIMITS: A list of tuples containing a size (in bytes) and a
+@type SIZE_LIMITS: A list of tuples containing a size (in bytes) and a
     corresponding warning message.
     
 """
@@ -29,6 +29,7 @@ utility which can be run from the command line.
 import os
 import sys
 import string
+import textwrap
 
 # Ensure a compatible version of Python is being used
 # (the ternary operator was added in 2.5)
@@ -57,17 +58,21 @@ except ImportError, e:
 
 ##############################################################################
 
-# TODO: Subtract worst-case bootloader (and GAMBY library) sizes from max
-_SIZE_LIMITS = [
-   (30 * 1024, "ATMega328 available flash"),
-   (14 * 1024, "ATMega168 available flash"),
+SIZE_LIMITS = [
+   (30 * 1024, "All ATMega328 available flash, +/- 1KB"),
+   (14 * 1024, "ATMega168 available flash (or half ATMega328), +/- 1KB"),
    (12 * 1024, "a reasonable size"),
 ]
 
 ##############################################################################
 
 class ConversionError(Exception):
+    """ An exception raised when an image could not be converted to a
+        GAMBY bitmap. Improves exception handling when using gamby.py as a 
+        library.
+    """
     pass
+
 
 ##############################################################################
 
@@ -120,9 +125,19 @@ class Sprites:
         img.seek(0)
         return i
 
+    
+    @classmethod
+    def getAlpha(cls, img):
+        """
+        """
+        # Get alpha for mask, using img converted to RGBA
+        alpha = Image.new('L', img.size)
+        alpha.putdata([x[-1] for x in img.convert("RGBA").getdata()])
+        return alpha
+
 
     @classmethod
-    def createData(cls, img, ignoreSolid=True):
+    def createData(cls, img, ignoreSolid=True, sizes=True):
         """ Turn an image into an array of bits, stored as a series of bytes.
             The first two items are the image dimensions.
 
@@ -130,6 +145,8 @@ class Sprites:
             @type img: `Image.Image`
             @param ignoreSolid: If `True`, bitmaps that are all black or
                 all white are ignored; `None` is returned.
+            @return: A list containing [<width>,<height>, [<frame1 bytes...>],
+                ..., [<frameN bytes...>]]
         """
         if img is None:
             return None
@@ -146,26 +163,27 @@ class Sprites:
                 # Totally white, ignore
                 return None
 
-        # Make the data list. The first two elements are the dimension
-        result = list(img.size)
+        result = []
+        if sizes:
+            # Make the data list. The first two elements are the dimension
+            result.extend(img.size)
 
         i = 0
         b = 0
         for p in data:  
             # bitmaps on LCD are 'inverse': 1 is black, 0 is not
-            p = 0 if p else 1
-            b = (b << 1) + p
+            b = (b << 1) + (0 if p else 1)
             i += 1
             if i == cls._unitSize:
                 result.append(b)
-                i = 0
-                b = 0
+                i = b = 0
         return result
 
 
     @classmethod
     def undo(cls, d, imgSize=None):
         """ Convert an array of bitmap data into an image.
+            Does not (currently) work on multi-frame bitmaps.
         """
         if imgSize == None:
             imgSize = d[0:2]
@@ -178,29 +196,26 @@ class Sprites:
                     ar.append(255)
                 else:
                     ar.append(0)
-        img.putdata(ar)
+        img.putdata(ar[:imgSize[0]*imgSize[1]])
         return img.rotate(90)
 
 
     @classmethod
-    def writeCode(cls, name, data, digits=2, sizes=True, tab="    "):
+    def writeCode(cls, name, data, digits=2, sizes=True, width=78, tab="    "):
         """ Generate Arduino code from a single list of bitmap data.
         """
         if data == None:
             return ''
-        result = []
+        lineWidth = width - tab.count(" ") + tab.count("\t") * 4
+        result = ["PROGMEM %s %s[] = {" % (cls._dataType, name)]
         if sizes:
-            result.append("%s%s, %s," % (tab, data[0], data[1]))
-         
-        line = []
-        i = 0
-        for b in data[2:]:
-            if i % 12 == 0:
-                line.append("\n%s" % tab)
-            line.append("0x%s, " % hex(b)[2:].rjust(digits, '0'))
-            i += 1
-        result.append(''.join(line).rstrip(' \n,'))
-        return "PROGMEM %s %s[] = {\n%s\n}\n" % (cls._dataType, name, '\n'.join(result))
+            result.append("%s, %s," % (data[0], data[1]))
+        for i in xrange(len(data)-2):
+            result.append("// Frame %d" % (i))
+            result.extend(textwrap.wrap(", ".join(map(hex, data[i+2])), 
+                                        lineWidth))
+        
+        return ('\n'+tab).join(result)+"\n}\n"
 
 
     @classmethod
@@ -216,8 +231,8 @@ class Sprites:
                 This is modified 'in place'.
             @param out: A stream to which to write the results.
         """
-        if mask == None:
-            mask = cls._useMask
+        mask = cls._useMask if mask is None else mask
+        
         if isinstance(f, basestring):
             filename = f
             img = Image.open(f)
@@ -228,35 +243,32 @@ class Sprites:
             # Problem.
             raise IOError, "Can't convert %s (not filename or Image.Image)" % f
 
+        numFrames = cls.numFrames(img)
         totalSize = 0
-        bits = []
+        bits = list(img.size)
+        alphaBits = list(img.size)
+        
         for frame in ImageSequence.Iterator(img):
             # image rotated 90 degrees clockwise so bits in best order for LCD
-            # (doesn't matter in graphics mode, but in text/block mode it helps)
-            img = img.rotate(-90)
-            alpha = None
-            if mask:
-                # Get alpha for mask, using img converted to RGBA
-                alpha = Image.new('L', img.size)
-                alpha.putdata([x[-1] for x in img.convert("RGBA").getdata()])
-            converted = (cls.createData(img), cls.createData(alpha))
-            if converted[0]:
-                totalSize += len(converted[0])
+            # Currently doesn't matter in graphics mode, but bitmaps in text/block mode it helps)
+            frame = frame.rotate(-90)
+            alpha = cls.getAlpha(frame) if mask else None
+            
+            converted = cls.createData(frame, ignoreSolid=False, sizes=False)
+            convertedAlpha = cls.createData(alpha, ignoreSolid=False, sizes=False)
+            
+            totalSize += len(converted) + len(convertedAlpha)
             bits.append(converted)
+            alphaBits.append(convertedAlpha)
 
-        name = fixName(filename)
-        result = []
         if not bits:
             # Nothing returned (empty list or possibly None)
             raise ConversionError, "Could not convert %s (no data?)" % filename
 
-        if len(bits) == 1:
-             result = [cls.writeCode(name, bits[0][0]),
-                       cls.writeCode(name + "_mask", bits[0][1])]
-        else:
-            for i in range(len(bits)):
-                result.append(cls.writeCode("%s_%s" % (name, i), bits[i][0]))
-                result.append(cls.writeCode("%s_%s_mask" % (name, i), bits[i][1]))
+        name = fixName(filename)
+        result = ["// Converted from %s" % filename, ""]
+        result.append(cls.writeCode(name, bits))
+        result.append(cls.writeCode(name + "_mask", alphaBits))
 
         if size:
             # Image count and total size (in bytes), modified 'in place'
@@ -351,7 +363,7 @@ class Tilesets(Sprites):
             for r in range(0, 16, 4):
                 tile = img.crop((r, c, r + 4, c + 4))
                 data = cls.createData(tile)
-                bits.append(data)
+                bits.append(data[2])
             
         name = fixName(filename)
 
@@ -464,7 +476,7 @@ Options:
     modes[mode][direction](argv, size=size, out=out)
 
     # Give warning if too much data generated.
-    for memory, name in _SIZE_LIMITS:
+    for memory, name in SIZE_LIMITS:
         if size[1] > memory:
             err.write("Warning: Generated data is %s bytes; %s is %s bytes\n" \
                       % (size[1], name, memory))
