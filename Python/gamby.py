@@ -212,10 +212,10 @@ class Sprites:
             result.append("%s, %s," % (data[0], data[1]))
         for i in xrange(len(data)-2):
             result.append("// Frame %d" % (i))
-            result.extend(textwrap.wrap(", ".join(map(hex, data[i+2])), 
+            result.extend(textwrap.wrap(", ".join(map(hex, data[i+2]))+",", 
                                         lineWidth))
         
-        return ('\n'+tab).join(result)+"\n}\n"
+        return ('\n'+tab).join(result)[:-1]+"\n};\n"
 
 
     @classmethod
