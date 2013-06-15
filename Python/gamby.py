@@ -12,8 +12,8 @@ utility which can be run from the command line.
 
 @todo: Further code cleaning. Too many hacks; full refactoring may be needed.
     Data type in generated code may not be consistent.
-@todo: Add 'icons' (8px high bitmaps; same as sprites without height)
-@todo: Add 'splash pages' (multi-line icons, each 8px line a 'frame')
+@todo: Sprites.convert() is too big; break into smaller pieces that subclasses
+    can override piecemeal. 
 @todo: Use regex to parse code when converting back to GIF. This should make it
     easy to do things like remove comments, parse out names, etc.
 @todo: Use getopt or argparse instead of 'manually' parsing arguments; there
@@ -105,7 +105,22 @@ class Sprites:
     _useMask = True
     _dataType = 'prog_uchar'
     _unitSize = 8
-   
+    
+    
+    @classmethod
+    def openImage(cls, f):
+        """ Perform basic validation of an image before conversion. Raises
+            a `ConversionError` if the validation fails; does nothing if 
+            validation passes.
+        """
+        if isinstance(f, basestring):
+            return Image.open(f)
+        elif isinstance(f, Image.Image):
+            return f
+        # Problem.
+        raise IOError, "Can't convert %s (not filename or Image.Image)" % f
+        
+        
     @classmethod
     def numFrames(cls, img):
         """ Return the number of frames in an animated GIF.
@@ -128,7 +143,11 @@ class Sprites:
     
     @classmethod
     def getAlpha(cls, img):
-        """
+        """ Retrieve an image's alpha.
+        
+            @param img: The image, presumably one with an alpha.
+            @type img: `Image.Image`
+            @return: A grayscale (mode "L") `Image.Image`
         """
         # Get alpha for mask, using img converted to RGBA
         alpha = Image.new('L', img.size)
@@ -233,16 +252,9 @@ class Sprites:
         """
         mask = cls._useMask if mask is None else mask
         
-        if isinstance(f, basestring):
-            filename = f
-            img = Image.open(f)
-        elif isinstance(f, Image.Image):
-            filename = f.filename
-            img = f
-        else:
-            # Problem.
-            raise IOError, "Can't convert %s (not filename or Image.Image)" % f
-
+        img = cls.openImage(f)
+        filename = img.filename
+        
         numFrames = cls.numFrames(img)
         totalSize = 0
         bits = list(img.size)
@@ -255,20 +267,24 @@ class Sprites:
             alpha = cls.getAlpha(frame) if mask else None
             
             converted = cls.createData(frame, ignoreSolid=False, sizes=False)
-            convertedAlpha = cls.createData(alpha, ignoreSolid=False, sizes=False)
-            
-            totalSize += len(converted) + len(convertedAlpha)
             bits.append(converted)
-            alphaBits.append(convertedAlpha)
+            totalSize += len(converted)
+            
+            if mask:
+                convertedAlpha = cls.createData(alpha, ignoreSolid=False, 
+                                                sizes=False)
+                alphaBits.append(convertedAlpha)
+                totalSize += len(convertedAlpha)
 
         if not bits:
             # Nothing returned (empty list or possibly None)
             raise ConversionError, "Could not convert %s (no data?)" % filename
 
         name = fixName(filename)
-        result = ["// Converted from %s" % filename, ""]
+        result = ["// Converted from %s" % filename,]
         result.append(cls.writeCode(name, bits))
-        result.append(cls.writeCode(name + "_mask", alphaBits))
+        if mask:
+            result.append(cls.writeCode(name + "_mask", alphaBits))
 
         if size:
             # Image count and total size (in bytes), modified 'in place'
@@ -340,18 +356,23 @@ class Tilesets(Sprites):
     _dataType = "prog_uint16_t"
     _unitSize = 16
 
-    @classmethod
-    def convert(cls, f, size=None):
-        if isinstance(f, basestring):
-            filename = f
-            img = Image.open(f)
-        elif isinstance(f, Image.Image):
-            filename = f.filename
-            img = f
-        else:
-            # Problem.
-            raise IOError, "Can't convert %s (not filename or Image.Image)" % f
+    def openImage(cls, f):
+        """ Perform basic validation of an image before conversion. Raises
+            a `ConversionError` if the validation fails; does nothing if 
+            validation passes.
+        """
+        img = Sprites.openImage(f)
+        if img.size[0] != 16 or img.size[1] != 16:
+            raise ConversionError, "Tilesets must be 16x16; %s is %s" % \
+                (img.filename, img.size)
+        return img
+                
 
+    @classmethod
+    def convert(cls, f, mask=None, size=None):
+        img = cls.openImage(f)
+        filename = img.filename
+                
         # image rotated 90 degrees clockwise so bits in best order for LCD
         # (doesn't matter in graphics mode, but in text/block mode it helps)
         img = img.rotate(-90)
@@ -377,13 +398,132 @@ class Tilesets(Sprites):
             size[1] += len(bits) * 2
          
         return cls.writeCode(name, bits, digits=cls._unitSize, sizes=False)
-      
 
+
+    @classmethod
     def unconvert(*args, **kwargs):
         raise NotImplementedError, "unconvert for Tilesets not yet implemented."
 
 
 ##############################################################################
+
+class Icons(Sprites):
+    """
+    """
+
+    _useMask = False
+    
+    @classmethod
+    def openImage(cls, f):
+        """ Loads and validates an image. 
+
+            @raise ConversionError: The image is not a size compatible with
+                conversion (height other than 8px).
+            @param f: A filename or `Image.Image`
+            @rtype: `Image.Image`
+        """
+        img = Sprites.openImage(f)
+        if img.size[1] != 8:
+            raise ConversionError, "Icons must be 8px high; %s is %d" % \
+                (img.filename, img.size[1])
+        return img
+                
+        
+    
+    @classmethod
+    def writeCode(cls, name, data, digits=2, sizes=True, width=78, tab="    "):
+        """ Generate Arduino code from a single list of bitmap data.
+        """
+        if data == None:
+            return ''
+        lineWidth = width - tab.count(" ") + tab.count("\t") * 4
+        result = ["PROGMEM %s %s[] = {" % (cls._dataType, name)]
+        if sizes:
+            result.append("%s," % data[0])
+        for i in xrange(len(data)-2):
+            result.append("// Frame %d" % (i))
+            result.extend(textwrap.wrap(", ".join(map(hex, data[i+2]))+",", 
+                                        lineWidth))
+        
+        return ('\n'+tab).join(result)[:-1]+"\n};\n"
+
+    @classmethod
+    def unconvert(*args, **kwargs):
+        raise NotImplementedError, "unconvert for Icons not yet implemented."
+
+
+##############################################################################
+
+class Splashscreens(Icons):
+    """ Create 'splash screens,' large images split into multiple 8-pixel-high 
+        icons, each row stored as a 'frame.' 
+    """
+
+    @classmethod
+    def openImage(cls, f):
+        """ Perform basic validation of an image before conversion. Raises
+            a `ConversionError` if the validation fails; does nothing if 
+            validation passes.
+        """
+        img = Sprites.openImage(f)
+        if img.size[1] % 8 != 0:
+            raise ConversionError, \
+                "Icons must be a multiple of 8px high; %s is %d" % \
+                (img.filename, img.size[1])
+        return img
+
+
+    @classmethod
+    def convert(cls, f, mask=None, size=[0, 0]):
+        """ Turn an image into Arduino code for GAMBY. Any transparency
+            or alpha channel is turned into its own sprite.
+
+            @param f: The image file or filename to convert
+            @param mask: If `True` (default), additional sprites are created
+                from the image's transparency information.
+            @param size: A two element list containing the total number of
+                converted images and the total number of bytes they consume.
+                This is modified 'in place'.
+            @param out: A stream to which to write the results.
+        """
+        img = cls.openImage(f)
+        filename = img.filename
+        
+        numFrames = cls.numFrames(img)
+        totalSize = 0
+        bits = list(img.size)
+        
+        img = img.rotate(-90)
+        for r in xrange(img.size[0]-8, -1, -8):
+            thisRow = img.crop((r, 0, r + 8, img.size[1]))
+            converted = cls.createData(thisRow, ignoreSolid=False, sizes=False)
+            bits.append(converted)
+            totalSize += len(converted)
+            
+        if not bits:
+            # Nothing returned (empty list or possibly None)
+            raise ConversionError, "Could not convert %s (no data?)" % filename
+
+        name = fixName(filename)
+        result = ["// Converted from %s" % filename,]
+        result.append(cls.writeCode(name, bits))
+
+        if size:
+            # Image count and total size (in bytes), modified 'in place'
+            size[0] += len(bits)
+            size[1] += totalSize
+
+        return '\n'.join(result).replace("// Frame ", "// Row ")
+
+
+    @classmethod
+    def unconvert(*args, **kwargs):
+        raise NotImplementedError, \
+            "unconvert for Splashscreens not yet implemented."
+
+
+##############################################################################
+
 
 if __name__ == '__main__':
     argv = sys.argv
@@ -399,6 +539,10 @@ gamby.py <sprite|tileset> [-u|--undo] [-o|--output filename] [sourcefiles]
   sprite: Generates PROGMEM code from an image file. Each frame of an animated
     GIF is converted to its own sprite. Mask sprites are generated from GIF
     transparency.
+  icon: Generate PROGMEM code for an icon. Icons must be 8 pixels high.
+  splash: Generate PROGMEM for a splash screen, which is a larger image
+    split into 8px strips, which are saved as an icon with multiple frames.
+    Splash screens cannot have more than one frame.
   tileset: Generates PROGMEM code for a tile-mode tileset from a 4x4 grid of
     4x4 pixel tiles. 
 
@@ -454,6 +598,8 @@ Options:
     # the process is one-way. 
     modes = {
              'sprite': (Sprites.convertFiles, Sprites.unconvertFiles),
+             'icon': (Icons.convertFiles, None),
+             'splash': (Splashscreens.convertFiles, None),
              'tileset': (Tilesets.convertFiles, None),
     }
 
