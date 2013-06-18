@@ -14,10 +14,13 @@ utility which can be run from the command line.
     Data type in generated code may not be consistent.
 @todo: Sprites.convert() is too big; break into smaller pieces that subclasses
     can override piecemeal. 
+
+@todo: Add option to fill out Icons that are shorter than 8px (including 
+    Splashscreens with a short final row), filling extra with 0 or 1.
+@todo: Add option to crop Icons that are not divisible by 8.
+@todo: Get 'undo' working again, if it seems worthwhile.
 @todo: Use regex to parse code when converting back to GIF. This should make it
     easy to do things like remove comments, parse out names, etc.
-@todo: Use getopt or argparse instead of 'manually' parsing arguments; there
-    are now too many options to continue as is.
 
 @var SIZE_LIMITS: An set of 'constants' for providing warnings when too much
     memory is being used.
@@ -26,6 +29,7 @@ utility which can be run from the command line.
     
 """
 
+import argparse
 import os
 import sys
 import string
@@ -109,9 +113,18 @@ class Sprites:
     
     @classmethod
     def openImage(cls, f):
-        """ Perform basic validation of an image before conversion. Raises
-            a `ConversionError` if the validation fails; does nothing if 
-            validation passes.
+        """ Load and perform basic validation of an image before conversion. 
+            Can be called with either the filename of an image or an 
+            `Image.Image`; in the latter case, only the validation is
+            performed.
+            
+            @raise ConversionError: The image failed validation.
+            @raise IOError: The image could not be read (or it was neither
+                a filename nor `Image.Image`).
+            
+            @param f: An image, or an image's filename.
+            @type f: `Image.Image` or string.
+            @rtype: `Image.Image`
         """
         if isinstance(f, basestring):
             return Image.open(f)
@@ -526,100 +539,58 @@ class Splashscreens(Icons):
 
 
 if __name__ == '__main__':
-    argv = sys.argv
-    out = sys.stdout
-    err = sys.stderr
-    scriptName = argv.pop(0)
-   
-    if argv[0].lower() in ('help', '-h', '--help', '?'):
-        print """GAMBY Graphics Tool\n
-Usage:
-gamby.py <sprite|tileset> [-u|--undo] [-o|--output filename] [sourcefiles]
-
-  sprite: Generates PROGMEM code from an image file. Each frame of an animated
-    GIF is converted to its own sprite. Mask sprites are generated from GIF
-    transparency.
-  icon: Generate PROGMEM code for an icon. Icons must be 8 pixels high.
-  splash: Generate PROGMEM for a splash screen, which is a larger image
-    split into 8px strips, which are saved as an icon with multiple frames.
-    Splash screens cannot have more than one frame.
-  tileset: Generates PROGMEM code for a tile-mode tileset from a 4x4 grid of
-    4x4 pixel tiles. 
-
-Options:
-  sourcefiles: One or more source files to convert. Defaults to stdin.
-  --output | -o <filename>: Specifies a file to which the output is to be
-    written. Defaults to stdout (for redirecting, etc.).
-  --undo | -u: Converts Arduino PROGMEM code back to an image (if possible).
-"""
-        exit(0)
-
-    params = {}
-   
-    # Parse out command-line parameters
-    # options list: name long form, short form, number of arguments
-    options = [
-               ('--output', '-o', 1),
-               ('--undo', '-u', 0)
-    ]
-    for longName, shortName, numArgs in options:
-        i = -1
-        if longName in argv:
-            i = argv.index(longName)
-            argv[argv.index(longName)] = shortName
-        elif shortName in argv:
-            i = argv.index(shortName)
-        if i >= 0:
-            argv.pop(i)
-            params[shortName] = [argv.pop(i) for p in range(numArgs)]
-
-    # Process univerally-applicable parameters
-    out = params['-o'][0] if '-o' in params else out
-    direction = 1 if '-u' in params else 0
-   
-#   if '-o' in params:
-#      out = params['-o'][0]
-
-    # With parameters and script name removed, are there enough arguments?
-    if len(argv) == 0:
-        err.write('%s: Too few arguments\n' % scriptName)
-        if out != sys.stdout:
-            out.close()
-        if err != sys.stderr:
-            err.close()
-        exit()
-      
-    mode = argv.pop(0).lower()
-
     # List of modes.
     # { <mode name>: (<converter method>, <unconverter method>), ... }
     # <converter> and <unconverter> are functions/methods for generating data from
     # from images and regenerating images from data, respectively. If one is None,
     # the process is one-way. 
     modes = {
-             'sprite': (Sprites.convertFiles, Sprites.unconvertFiles),
-             'icon': (Icons.convertFiles, None),
-             'splash': (Splashscreens.convertFiles, None),
-             'tileset': (Tilesets.convertFiles, None),
+             'sprite': Sprites,
+             'icon': Icons,
+             'splash': Splashscreens,
+             'tileset': Tilesets,
     }
 
-    if mode not in modes:
-        err.write("%s: unknown command '%s'\n" % (scriptName, mode))
-        exit()
+    parser = argparse.ArgumentParser(description="GAMBY Graphics Tool.\n"\
+        "Converts images into GAMBY data. For best results, images should be" \
+        "1-bit (black and white); GIF or PNG8 are recommended.")
+    parser.add_argument("mode",
+        help="The name of the mode.", choices=modes.keys())
+    parser.add_argument("--output", "-o", 
+        help="The output filename. Defaults to stdout.")
+#    parser.add_argument("--crop", "-c", action="store_true",
+#        help="Crop an Icon or Splashscreen's vertical size to a multiple of " \
+#            "8 (or just 8 for Icons).")
+#    parser.add_argument("--fill", "-f", type=int,
+#        help="Fill an Icon or Splashscreen's vertical size to the next " \
+#            "multiple of 8, using the specified value (0 or 1).")
+    parser.add_argument("--undo", "-u", action="store_true",
+        help="Convert code back into an image. Not implemented for all " \
+            "formats.")
+#    parser.add_argument("--nomask", "-n", action="store_true", default=False,
+#        help="Do not generate a 'mask' Sprite from the image's transparency " \
+#            "(Sprites only).")
+    parser.add_argument("source", nargs="*", help="The source filename(s).")
+    args = parser.parse_args()
 
-    if modes[mode][direction] == None:
-        if direction == 0:
-            err.write("%s: cannot convert to '%s'\n" % (scriptName, mode))
-        else:
-            err.write("%s: cannot undo conversion '%s'\n" % (scriptName, mode))
-        exit()
+    err = sys.stderr
 
+    # Process universally-applicable parameters
+    out = file.open(args.output,"wb") if args.output else sys.stdout
+   
     # List to keep track of number of converted items and total size in bytes
     # This gets passed to conversion methods and is changed 'in place'.
     size = [0, 0]
 
     # Do the conversion!
-    modes[mode][direction](argv, size=size, out=out)
+    if args.undo:
+        try:
+            modes[args.mode].unconvertFiles(args.source, out=out)
+        except NotImplementedError:
+            err.write("Error: undo not implemented for mode '%s'\n" % args.mode)
+    else:
+        modes[args.mode].convertFiles(args.source, size=size, out=out)
+
 
     # Give warning if too much data generated.
     for memory, name in SIZE_LIMITS:
@@ -627,6 +598,7 @@ Options:
             err.write("Warning: Generated data is %s bytes; %s is %s bytes\n" \
                       % (size[1], name, memory))
         break
+
 
     # shut things down.
     if out != sys.stdout:
